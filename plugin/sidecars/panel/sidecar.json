@@ -1,0 +1,12 @@
+{
+  "command": "node",
+  "args": ["main.mjs"],
+  "restart_policy": "always",
+  "display_name": "ClearPane",
+  "description": "工作区文章列表、自动更新和选区评论。",
+  "has_web_ui": true,
+  "ui_config": {
+    "display_name": "ClearPane",
+    "views": [{ "path": "/", "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE", "title": "ClearPane" }]
+  }
+}

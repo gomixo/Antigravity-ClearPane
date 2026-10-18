@@ -1,0 +1,10 @@
+import { cp, mkdir, rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { resolve, relative } from 'node:path';
+const root = fileURLToPath(new URL('../', import.meta.url));
+const destination = resolve(root, 'dist/antigravity-clearpane');
+if (relative(root, destination).startsWith('..')) throw new Error('Package path escaped workspace');
+await rm(destination, { recursive: true, force: true });
+await mkdir(resolve(root, 'dist'), { recursive: true });
+await cp(resolve(root, 'plugin'), destination, { recursive: true });
+console.log(`离线插件目录：${destination}`);

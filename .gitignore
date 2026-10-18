@@ -1,0 +1,46 @@
+# Dependencies and generated output
+node_modules/
+dist/
+plugin/sidecars/panel/assets/
+
+# Local debugging, screenshots and machine-specific acceptance notes
+.local/
+/docs/验收记录.md
+.cache/
+coverage/
+*.log
+*.tsbuildinfo
+
+# Environment variables and credentials; keep safe example templates
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.template
+!.env.*.template
+.npmrc
+.netrc
+credentials.json
+credentials.*.json
+secrets.json
+secrets.*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ecdsa
+id_ed25519
+
+# Local editor and operating-system files
+.idea/
+.vscode/
+.history/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
