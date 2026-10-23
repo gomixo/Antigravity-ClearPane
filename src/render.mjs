@@ -62,7 +62,14 @@ md.renderer.rules.fence = (tokens, index, options, env) => {
 };
 export function renderMarkdown(text) {
   const env = { diagrams: [] };
-  return { html: md.render(text, env), diagrams: env.diagrams };
+  // ponytail: detect a delimited field block; displaying raw YAML needs no YAML parser.
+  const frontmatter = /^\uFEFF?---[ \t]*\r?\n((?:[^\n]*\n)*?)(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/.exec(text);
+  let properties = '';
+  if (frontmatter && /^[^\s#][^:\r\n]*:(?:[ \t]|\r?$)/m.test(frontmatter[1])) {
+    properties = `<details class="frontmatter" data-no-comment><summary>文档属性</summary><pre><code>${escape(frontmatter[1])}</code></pre></details>\n`;
+    text = text.slice(frontmatter[0].length);
+  }
+  return { html: properties + md.render(text, env), diagrams: env.diagrams };
 }
 
 let mermaidModule;
