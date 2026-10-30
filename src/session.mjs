@@ -127,7 +127,7 @@ export class PreviewSession {
         send(message, conversationId),
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Unknown send result')), timeout); }),
       ]);
-      if (receipt?.error || receipt?.response?.error) return 'rejected';
+      if (receipt?.error || receipt?.isError || receipt?.response?.error) return 'rejected';
       if (this.session === session && this.comments === comments) this.comments = [];
       return 'sent';
     } catch {

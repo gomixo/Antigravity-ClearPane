@@ -164,11 +164,11 @@ const output = browser(['eval', '--stdin'], setup + String.raw`
   assert(!buttons[1].hidden && !buttons[2].hidden,'visible markers hidden');
   assert(Math.abs(buttons[1].getBoundingClientRect().top-buttons[2].getBoundingClientRect().top)>=28,'overlapping marker buttons');
   buttons[1].click();
-  assert(doc.getElementById('batch-dialog').open && doc.activeElement.id==='batch-comment-1','marker did not focus exact comment');
+  assert(!doc.getElementById('batch-dialog').open && !doc.getElementById('edit-comment-panel').hidden && doc.activeElement.id==='edit-comment','marker did not open single comment editor');
   doc.activeElement.value='edited via pencil';doc.activeElement.dispatchEvent(new win.Event('input',{bubbles:true}));
   await new Promise(r=>setTimeout(r,150));
   assert((await readCache('ui-A')).state.comments[1].comment==='edited via pencil','pencil edit not cached');
-  doc.getElementById('close-batch').click();
+  doc.getElementById('close-edit-comment').click();
   for(const mode of ['light','dark']){
     doc.getElementById('color-mode').value=mode;doc.getElementById('color-mode').dispatchEvent(new win.Event('change',{bubbles:true}));
     assert(win.getComputedStyle(doc.getElementById('preview'),'::highlight(comments)').backgroundColor!=='rgba(0, 0, 0, 0)','invisible highlight '+mode);

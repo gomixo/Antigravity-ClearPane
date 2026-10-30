@@ -115,7 +115,12 @@ test('workspace list and automatic saved-file updates protect reading, selection
       check($('preview').firstChild === beforePreview && CSS.highlights.get('comments').size === 1, 'unchanged rebuilt or lost highlight');
       check($('reader').scrollTop === beforeTop, 'unchanged scroll');
       check(qa.writes === beforeWrites, 'unchanged cached full snapshot');`);
+    await evaluate(`$('comment-markers').firstElementChild.click(); window.beforeReads = qa.reads;
+      check(!$('edit-comment-panel').hidden && !$('batch-dialog').open, 'single edit did not open');`);
     await writeFile(currentFile, article('saved B'));
+    await evaluate(`await new Promise(r => setTimeout(r, 2200));
+      check(qa.reads === beforeReads && !$('preview').textContent.includes('saved B'), 'single edit did not pause polling');
+      $('edit-comment-panel').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));`);
     await evaluate(`await wait(() => $('preview').textContent.includes('saved B'));
       check($('batch-count').textContent === '1' && CSS.highlights.get('comments').size === 0, 'changed comments');
       check(Math.abs($('reader').scrollTop - beforeTop) < 3, 'changed scroll');

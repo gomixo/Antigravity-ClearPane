@@ -1,5 +1,7 @@
 # Antigravity ClearPane
 
+现已提供 **Codex 桌面版本**：复用阅读与批注界面，增加本地 MCP、受保护的浏览器阅读页及整批评论交付。运行 `npm run build:codex` 构建，详见 [Codex 使用说明](docs/Codex使用说明.md)。下文介绍原 Antigravity 版本。
+
 Antigravity ClearPane 是专为 Google Antigravity IDE 打造的官方辅助侧面板（Auxiliary Side Pane）Markdown 深度阅读与批量选区评审插件。
 
 它让开发者与用户在与 AI Agent 协作时，能够在一个独立、舒适、实时同步且功能完整的专属侧边栏中阅读项目文档、设计方案与技术规格，并通过直接在正文中划词批注，将修改建议一次性批量反馈给 Agent，形成高效率的文档研读与评审闭环。
