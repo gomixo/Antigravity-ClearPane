@@ -120,7 +120,7 @@ test('real SDK displays local and network images, preserves comments and cleans 
       $('refresh').click();
       await wait(() => qa.imageReads > originalReads && !$('refresh').disabled && document.querySelectorAll('.document-image img:not([hidden])').length === 6);
       check(CSS.highlights.get('comments').size === 1 && $('batch-count').textContent === '1', 'refresh lost comment');
-      check(Math.abs($('reader').scrollTop - beforeTop) < 4, 'refresh lost scroll');
+      check(Math.abs($('reader').scrollTop - beforeTop) < 4, 'refresh lost scroll: ' + $('reader').scrollTop + ' vs ' + beforeTop);
       $('show-batch').click(); $('clear-batch').click(); $('close-batch').click();`);
     for (const width of [800, 320, 213]) {
       await command('set', 'viewport', String(width), '700');
@@ -159,7 +159,7 @@ test('real SDK displays local and network images, preserves comments and cleans 
     await evaluate(`await wait(() => document.querySelectorAll('.document-image img:not([hidden])').length === 6);
       check($('preview').textContent.includes('可选评论正文'), 'recreated page lost article');`);
     await writeFile(file, article + '\n\n![updated](<' + pathToFileURL(image).href + '>)');
-    await evaluate(`await wait(() => document.querySelector('img[alt="updated"]')?.naturalWidth === 1200);
+    await evaluate(`await wait(() => document.querySelector('img[alt="updated"]')?.naturalWidth === 1200 && document.querySelectorAll('.document-image img:not([hidden])').length === 7);
       check(document.querySelectorAll('.document-image img:not([hidden])').length === 7, 'automatic update lost images');`);
   } finally {
     await command('close').catch(() => {});

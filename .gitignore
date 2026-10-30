@@ -2,6 +2,7 @@
 node_modules/
 dist/
 plugin/sidecars/panel/assets/
+codex/web/
 
 # Local debugging, screenshots and machine-specific acceptance notes
 .local/

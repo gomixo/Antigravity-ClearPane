@@ -12,7 +12,8 @@ const run = promisify(execFile);
 const browser = process.env.AGENT_BROWSER_BIN || join(homedir(), 'AppData/Roaming/npm/node_modules/agent-browser/bin/agent-browser-win32-x64.exe');
 const panel = new URL('../plugin/sidecars/panel/', import.meta.url);
 const preload = `
-const qa = window.qa = { calls: [], finish: null, mode: 'pending', states: new Map(), feedbackTimers: [] };
+const qa = window.qa = { calls: [], finish: null, mode: 'pending', states: new Map(JSON.parse(sessionStorage.getItem('restore') || '[]')), feedbackTimers: [] };
+sessionStorage.removeItem('restore');
 const text = '# 测试文章\\n\\n' + Array.from({ length: 60 }, (_, i) => '正文段落 ' + i).join('\\n\\n');
 const path = 'D:\\\\example.md';
 const documentState = { path, text, name: 'example.md', checkedAt: '2026-10-14T00:00:00Z' };
@@ -88,6 +89,90 @@ test('comment shortcuts, responsive help and batch send lifecycle', { timeout: 1
     checkCount($('batch-list').children.length);`;
   try {
     await command('open', `http://127.0.0.1:${server.address().port}`);
+    await evaluate(`(async () => { ${ready}
+      $('reader').scrollTop = 0; $('reader').dispatchEvent(new Event('scroll'));
+      const paragraph = document.querySelector('#preview p');
+      const range = document.createRange(); range.selectNodeContents(paragraph);
+      window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+      document.dispatchEvent(new Event('selectionchange')); $('floating-comment').click();
+      $('comment').value = '未加入的草稿'; $('comment').dispatchEvent(new Event('input'));
+      const draftQuote = $('quote').textContent;
+      $('comment-markers').children[1].click();
+      check(!$('batch-dialog').open && !$('edit-comment-panel').hidden && $('comment-panel').hidden, 'Pencil must open only one comment');
+      check(document.activeElement === $('edit-comment') && $('edit-comment').value === '意见 1', 'Pencil did not focus the matching comment');
+      check($('edit-comment-quote').textContent === '正文' && $('edit-comment-path').textContent, 'Single editor lost its reference');
+      const before = structuredClone(qa.states.get('A').state);
+      $('edit-comment').value = '单条即时修改'; $('edit-comment').dispatchEvent(new Event('input'));
+      await waitFor(() => qa.states.get('A').state.comments[1].comment === '单条即时修改');
+      const saved = qa.states.get('A').state;
+      check(JSON.stringify(saved.comments[0]) === JSON.stringify(before.comments[0]) && saved.comments.length === 2, 'Pencil changed another comment or count');
+      check(saved.comments[1].quote === before.comments[1].quote && JSON.stringify(saved.comments[1].anchor) === JSON.stringify(before.comments[1].anchor), 'Pencil changed the anchor');
+      check(saved.commentText === '未加入的草稿' && $('quote').textContent === draftQuote && saved.instruction === before.instruction, 'Pencil overwrote the draft or instruction');
+      shortcut($('edit-comment')); check(!qa.calls.length && !$('edit-comment-panel').hidden, 'Single edit submitted a batch');
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      check($('edit-comment-panel').hidden && document.activeElement === $('comment-markers').children[1], 'Escape did not close and return focus');
+      $('comment-markers').firstElementChild.click();
+      check($('edit-comment').value === '意见 0', 'First pencil opened another comment');
+      $('close-edit-comment').click();
+      $('comment-markers').children[1].click();
+      check($('edit-comment').value === '单条即时修改', 'Reopen lost the edit');
+      $('edit-comment').value = ' '; $('edit-comment').dispatchEvent(new Event('input'));
+      check($('send-batch').disabled && $('edit-comment').getAttribute('aria-invalid') === 'true', 'Blank edit must block sending');
+      $('edit-comment').value = '单条即时修改'; $('edit-comment').dispatchEvent(new Event('input'));
+      $('reader').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      check($('edit-comment-panel').hidden, 'Outside click did not close the single editor');
+      $('resume-comment').click();
+      check(!$('comment-panel').hidden && $('comment').value === '未加入的草稿' && $('quote').textContent === draftQuote, 'Original draft cannot resume');
+      $('comment-markers').children[1].click();
+      document.documentElement.style.display = 'none';
+      await waitFor(() => $('open').disabled);
+      check($('edit-comment-panel').hidden, 'Hidden panel retained an active editor');
+      document.documentElement.style.display = '';
+      await waitFor(() => !$('open').disabled);
+      $('comment-markers').children[1].click();
+      window.sidecar.conversationId = 'B'; $('edit-comment').value = '不能写入 B'; $('edit-comment').dispatchEvent(new Event('input'));
+      await waitFor(() => !$('open').disabled && $('batch-comment-1').value === '意见 1');
+      check($('edit-comment-panel').hidden && qa.states.get('A').state.comments[1].comment === '单条即时修改', 'Conversation switch leaked an edit');
+      window.sidecar.conversationId = 'A'; $('batch-instruction').dispatchEvent(new Event('input'));
+      await waitFor(() => !$('open').disabled && $('batch-comment-1').value === '单条即时修改');
+      check(!qa.calls.length, 'Editing called Agent');
+      return 'ok'; })()`);
+    for (const width of [800, 320, 213]) {
+      await command('set', 'viewport', String(width), '700');
+      await evaluate(`(async () => { ${ready}
+        $('reader').focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        $('comment-markers').children[1].click();
+        document.querySelector('#edit-comment-panel details').open = true;
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const box = $('edit-comment-panel').getBoundingClientRect();
+        check(box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight && $('edit-comment-panel').scrollWidth <= $('edit-comment-panel').clientWidth, 'Single editor overflows');
+        check(!$('batch-dialog').open && document.activeElement === $('edit-comment'), 'Single editor lost focus');
+        return 'ok'; })()`);
+      await command('screenshot', resolve('.local', 'single-comment-' + width + '.png'));
+    }
+    await evaluate(`(async () => { ${ready}
+      $('show-batch').click();
+      check($('edit-comment-panel').hidden && $('batch-dialog').open && $('batch-list').children.length === 2 && $('batch-comment-1').value === '单条即时修改', 'Header no longer opens the full updated list');
+      $('close-batch').click(); $('comment-markers').children[1].click();
+      $('clear-batch').click();
+      check($('edit-comment-panel').hidden && !$('comment-markers').children.length, 'Removed target kept its editor');
+      return 'ok'; })()`);
+    await command('reload');
+    await evaluate(`(async () => { ${ready}
+      $('comment-markers').children[1].click();
+      $('edit-comment').value = '页面重建保留'; $('edit-comment').dispatchEvent(new Event('input'));
+      await waitFor(() => qa.states.get('A').state.comments[1].comment === '页面重建保留');
+      sessionStorage.setItem('restore', JSON.stringify([...qa.states]));
+      return 'ok'; })()`);
+    await command('reload');
+    await evaluate(`(async () => { ${ready}
+      check($('edit-comment-panel').hidden && $('batch-comment-1').value === '页面重建保留', 'Recreated page lost the edit');
+      $('comment-markers').children[1].click();
+      check($('edit-comment').value === '页面重建保留', 'Recreated pencil loaded the wrong comment');
+      $('close-edit-comment').click();
+      return 'ok'; })()`);
+    await command('reload');
+    await command('set', 'viewport', '800', '700');
     await evaluate(`(async () => { ${ready}
       check(document.querySelectorAll('#show-batch').length === 1 && $('show-batch').closest('.header-strip'), 'Button must be in the persistent header');
       $('reader').focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -185,7 +270,8 @@ test('comment shortcuts, responsive help and batch send lifecycle', { timeout: 1
       $('close-batch').click();
       const top = $('reader').scrollTop;
       $('comment-markers').firstElementChild.click();
-      check(document.querySelector('.batch-item').open && document.activeElement === $('batch-comment-0'), 'Pencil did not expand and focus the editor');
+      check(!$('batch-dialog').open && !$('edit-comment-panel').hidden && document.activeElement === $('edit-comment'), 'Pencil did not open the single editor');
+      $('close-edit-comment').click(); $('show-batch').click(); $('batch-list').firstElementChild.open = true;
       for (const target of [$('batch-comment-0'), $('batch-instruction')]) {
         for (const options of [{ isComposing: true }, { repeat: true }, { ctrlKey: false }]) {
           check(shortcut(target, options) && $('batch-dialog').open && !qa.calls.length, 'Ignored key sent the batch');

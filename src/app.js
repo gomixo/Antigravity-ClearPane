@@ -5,7 +5,7 @@ import { loadImages } from './images.mjs';
 import 'katex/dist/katex.min.css';
 
 const $ = id => document.getElementById(id);
-const bridge = window.sidecar;
+const bridge = window.clearpane ?? window.sidecar;
 let model = new PreviewSession();
 let active = false;
 let selection = null;
@@ -27,10 +27,12 @@ let boundConversation = conversationId();
 const contexts = new Map();
 let context;
 let disposed = false;
+let initialOpened = false;
 let scrollTimer;
 let restoringScroll = false;
 let readingTop = 0;
 let commentRanges = [];
+let editingComment = null;
 let autoTimer;
 let autoController;
 let autoPending = false;
@@ -69,7 +71,7 @@ function setBatchFeedback(text = '', temporary = false) {
 }
 
 async function api(path, body, options = {}) {
-  if (!bridge) throw new Error('请在 Antigravity 的 ClearPane 面板打开。');
+  if (!bridge) throw new Error('请从 ClearPane 的宿主入口打开阅读器。');
   const response = await bridge.fetch(path, { method: 'POST', body: JSON.stringify(body), ...options });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || '请求失败，请重试。');
@@ -151,8 +153,8 @@ function autoAvailable() {
   const selected = window.getSelection();
   const range = selected?.rangeCount && !selected.isCollapsed ? selected.getRangeAt(0) : null;
   const selecting = range && ($('preview').contains(range.startContainer) || $('preview').contains(range.endContainer) || range.intersectsNode($('preview')));
-  return active && !disposed && context?.ready && boundConversation === conversation() && !!model.document &&
-    !model.loading && !model.sending && !model.uncertain && !selecting && $('comment-panel').hidden && !$('batch-dialog').open;
+  return active && !disposed && !bridge?.invalidated && context?.ready && boundConversation === conversation() && !!model.document &&
+    !model.loading && !model.sending && !model.uncertain && !selecting && $('comment-panel').hidden && $('edit-comment-panel').hidden && !$('batch-dialog').open;
 }
 function syncAutoUpdate() {
   const blocked = !autoAvailable();
@@ -275,6 +277,7 @@ function paintDocument(state) {
   resumeImages();
 }
 function suspend() {
+  closeEditComment(false);
   releaseImages?.(); releaseImages = undefined;
   if (context) context.commentSelection = [$('comment').selectionStart, $('comment').selectionEnd, $('comment').selectionDirection];
   clearTimeout(autoTimer);
@@ -336,9 +339,17 @@ function resumeDiagrams() {
 }
 function controls() {
   if (boundConversation !== conversation()) { void switchConversation(); return; }
-  const available = active && !!context?.ready;
+  const available = active && !!context?.ready && !bridge?.invalidated;
   for (const button of $('file-list').children) button.disabled = !available || model.sending;
   const locked = model.sending || model.uncertain;
+  if (editingComment && (!available || locked || !model.comments.includes(editingComment) ||
+    editingComment.conversationId !== conversation() || editingComment.revision !== model.revision ||
+    editingComment.path !== model.document?.path)) closeEditComment(false);
+  $('edit-comment').disabled = !available || locked;
+  $('edit-comment-count').textContent = `${$('edit-comment').value.length} / ${COMMENT_LIMIT}`;
+  const invalidEdit = !!editingComment && (!editingComment.comment.trim() || editingComment.comment.length > COMMENT_LIMIT);
+  $('edit-comment').setAttribute('aria-invalid', String(invalidEdit));
+  $('edit-comment-warning').textContent = invalidEdit ? '评论须为 1–4,000 字符，修改后才能统一发送。' : '';
   $('refresh').disabled = !available || !model.path || model.loading || model.sending;
   $('open').disabled = !available || model.sending;
   $('path').disabled = !available || model.sending;
@@ -350,7 +361,7 @@ function controls() {
   $('draft-warning').textContent = model.draft && !model.draft.valid ? '引用已失效，请在当前正文重新选择。评论文字已保留。' :
     model.draft && model.draft.conversationId !== conversation() ? '目标会话已变化，请重新开始评论。' :
     $('comment').value.length > COMMENT_LIMIT ? '评论超过 4,000 字符，请缩短后加入。' : '';
-  $('floating-comment').hidden = !active || !selection || locked || model.loading || !!model.error || !$('comment-panel').hidden;
+  $('floating-comment').hidden = !active || !selection || locked || model.loading || !!model.error || !$('comment-panel').hidden || !!editingComment;
   $('resume-comment').hidden = !model.draft;
   $('resume-comment').disabled = !available || locked;
   $('batch-count').textContent = model.comments.length;
@@ -358,7 +369,15 @@ function controls() {
   $('show-batch').classList.toggle('has-comments', model.comments.length > 0);
   $('show-batch').disabled = !available;
   const instruction = $('batch-instruction').value;
-  $('send-batch').disabled = !!model.batchError(conversation(), available, instruction);
+  const batchDisabled = !!model.batchError(conversation(), available, instruction);
+  $('send-batch').disabled = batchDisabled || (bridge?.kind === 'codex' && !bridge.canSend);
+  if ($('copy-batch')) $('copy-batch').disabled = batchDisabled;
+  if ($('native-annotation')) $('native-annotation').disabled = $('select-comment').disabled;
+  if (bridge?.kind === 'codex') {
+    $('send-batch').hidden = !bridge.canSend;
+    $('delivery-help').textContent = bridge.canSend ? '整批评论将交给当前宿主会话。' :
+      '复制后粘贴到目标 Codex 会话发送。复制不会清空评论。';
+  }
   $('clear-batch').disabled = locked || !model.comments.length;
   $('batch-instruction').disabled = locked;
   $('unlock-batch').hidden = !model.uncertain;
@@ -468,12 +487,15 @@ function renderAnnotations() {
     button.type = 'button';
     button.dataset.index = index;
     button.className = 'comment-marker';
+    button.setAttribute('aria-haspopup', 'dialog');
+    button.setAttribute('aria-controls', 'edit-comment-panel');
     button.setAttribute('aria-label', `修改评论 ${index + 1}`);
     button.title = `修改评论 ${index + 1}`;
     button.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg>';
     $('comment-markers').append(button);
   }
   if (CSS.highlights) CSS.highlights.set('comments', new Highlight(...commentRanges.map(item => item.range)));
+  if (editingComment && !commentRanges.some(({ index }) => model.comments[index] === editingComment)) closeEditComment(false);
   positionCommentMarkers();
 }
 function positionCommentMarkers() {
@@ -503,8 +525,10 @@ function positionCommentMarkers() {
 }
 function positionOverlays() {
   positionCommentMarkers();
-  const range = !$('comment-panel').hidden ? anchorRange : selection?.range;
-  if (!range && $('comment-panel').hidden) return;
+  const panel = editingComment ? $('edit-comment-panel') : $('comment-panel');
+  const range = editingComment ? commentRanges.find(({ index }) => model.comments[index] === editingComment)?.range :
+    !panel.hidden ? anchorRange : selection?.range;
+  if (!range && panel.hidden) return;
   const connected = range?.startContainer.isConnected;
   const rects = connected ? [...range.getClientRects()] : [];
   const edge = $('settings-toggle').getBoundingClientRect().bottom + 8;
@@ -513,8 +537,7 @@ function positionOverlays() {
   const buttonTop = Math.max(edge, Math.min(rect.bottom + 6, innerHeight - 44));
   $('floating-comment').style.left = `${left}px`;
   $('floating-comment').style.top = `${buttonTop}px`;
-  if (!$('comment-panel').hidden) {
-    const panel = $('comment-panel');
+  if (!panel.hidden) {
     const height = panel.getBoundingClientRect().height;
     const width = panel.getBoundingClientRect().width;
     const below = buttonTop + 36;
@@ -526,7 +549,7 @@ function positionOverlays() {
 function applySettings() {
   document.documentElement.style.setProperty('--reader-font-size', `${prefs.fontSize}px`);
   document.documentElement.style.setProperty('--reader-line-height', String(prefs.lineHeight));
-  document.documentElement.dataset.colorMode = prefs.colorMode;
+  document.documentElement.dataset.colorMode = bridge?.kind === 'codex' && prefs.colorMode === 'system' ? bridge.theme : prefs.colorMode;
   $('color-mode').value = prefs.colorMode;
   $('font-size').value = prefs.fontSize;
   $('line-height').value = prefs.lineHeight;
@@ -577,6 +600,7 @@ function setActive(value) {
     renderBatch();
     resumeDiagrams();
     resumeImages();
+    openInitial();
   }
   else controls();
 }
@@ -637,6 +661,12 @@ async function read(path) {
   } finally { if (context === target && readingModel.current(ticket)) { renderAnnotations(); controls(); cache(); } }
 }
 
+function openInitial() {
+  if (!active || !context?.ready || initialOpened) return;
+  initialOpened = true;
+  if (bridge?.initialPath && !model.document) void read(bridge.initialPath);
+}
+
 function displayRead(ticket, data, sameFile, refreshImages = false) {
   const target = context;
   const changed = !model.document || model.document.text !== data.text || model.document.path.toLowerCase() !== data.path.toLowerCase();
@@ -690,6 +720,7 @@ function startComment() {
   if (!selection || selection.revision !== model.revision || model.sending) return;
   if (selection.text.length > QUOTE_LIMIT) return note('引用超过 8,000 字符，请缩小选区。', true);
   if (model.draft?.valid && $('comment').value.trim()) { note('请先加入或取消当前评论；可通过“继续草稿”恢复。', true); return; }
+  closeEditComment(false);
   try { model.selectQuote(selection.text, conversation(), saveRange($('preview'), selection.range)); }
   catch (error) { return note(error.message, true); }
   $('quote').textContent = selection.text;
@@ -713,6 +744,12 @@ function closeComment(clear = false) {
   controls();
   cache();
 }
+function closeEditComment(focus = true) {
+  const index = model.comments.indexOf(editingComment);
+  editingComment = null;
+  $('edit-comment-panel').hidden = true;
+  if (focus) ($('comment-markers').querySelector(`button[data-index="${index}"]:not([hidden])`) ?? $('reader')).focus({ preventScroll: true });
+}
 function addComment(event) {
   event.preventDefault();
   try { model.addComment(conversation(), active, $('comment').value); }
@@ -727,6 +764,7 @@ function addComment(event) {
 async function sendBatch(event) {
   event.preventDefault();
   controls();
+  if (bridge?.kind === 'codex' && !bridge.canSend) return;
   if (model.batchError(conversation(), active, $('batch-instruction').value)) return;
   const target = context;
   if (!active || !target?.ready) return;
@@ -749,7 +787,7 @@ async function sendBatch(event) {
   if (context !== target || disposed) return;
   if (result === 'sent') {
     $('batch-instruction').value = '';
-    setBatchFeedback('评论已统一发送。可在主会话展开 Message from System 查看。', true);
+    setBatchFeedback(bridge.sentNotice ?? '评论已统一发送。可在主会话展开 Message from System 查看。', true);
     renderBatch();
     $('batch-warning').textContent = batchFeedback;
   } else {
@@ -778,7 +816,10 @@ on($('line-height'), 'input', () => { prefs.lineHeight = Number($('line-height')
 on($('font-size'), 'change', () => void persistSettings());
 on($('line-height'), 'change', () => void persistSettings());
 on(document, 'selectionchange', captureSelection);
-on(document, 'pointerdown', event => { if (!$('comment-panel').hidden && !event.target.closest('#comment-panel, #floating-comment, #select-comment')) closeComment(); });
+on(document, 'pointerdown', event => {
+  if (!$('comment-panel').hidden && !event.target.closest('#comment-panel, #floating-comment, #select-comment')) closeComment();
+  if (editingComment && !event.target.closest('#edit-comment-panel, #comment-markers')) { closeEditComment(false); controls(); }
+});
 on($('floating-comment'), 'mousedown', event => event.preventDefault());
 on($('select-comment'), 'mousedown', event => event.preventDefault());
 on($('floating-comment'), 'click', startComment);
@@ -786,26 +827,43 @@ on($('select-comment'), 'click', startComment);
 on($('comment'), 'input', () => { controls(); cache(); });
 on($('comment-form'), 'submit', addComment);
 on($('cancel-comment'), 'click', () => closeComment(true));
-on($('resume-comment'), 'click', () => { if (!model.draft) return; $('reader').focus({ preventScroll: true }); setHeader(false); commentOpen = true; restoreComment(); cache(); });
+on($('resume-comment'), 'click', () => { if (!model.draft) return; closeEditComment(false); $('reader').focus({ preventScroll: true }); setHeader(false); commentOpen = true; restoreComment(); cache(); });
 on($('header'), 'pointerenter', () => { hoverHeader = true; setHeader(true); });
 on($('header'), 'pointerleave', () => { hoverHeader = false; collapseHeader(); });
 on($('header'), 'focusout', () => queueMicrotask(collapseHeader));
 on($('header'), 'focusin', () => setHeader(true));
 on($('settings-toggle'), 'click', () => setHeader(true));
 on($('color-mode'), 'change', () => { prefs.colorMode = $('color-mode').value; prefsChanged++; applySettings(); void persistSettings(); });
-on($('show-batch'), 'click', () => { renderBatch(); $('batch-dialog').showModal(); controls(); });
+on($('show-batch'), 'click', () => { closeEditComment(false); renderBatch(); $('batch-dialog').showModal(); controls(); });
 on($('comment-markers'), 'click', event => {
   const button = event.target.closest('button[data-index]');
-  if (!button || !active || model.sending || model.uncertain) return;
+  if (!button || !active || !context?.ready || boundConversation !== conversation() || model.sending || model.uncertain) return;
   const index = Number(button.dataset.index);
+  const item = model.comments[index];
+  if (!item || !commentRanges.some(entry => entry.index === index)) return;
   closeComment();
-  renderBatch();
-  $('batch-dialog').showModal();
-  const input = $(`batch-comment-${index}`);
-  input.closest('.batch-item').open = true;
-  input.scrollIntoView({ block: 'center' });
-  input.focus({ preventScroll: true });
+  selection = null;
+  window.getSelection()?.removeAllRanges();
+  editingComment = item;
+  $('edit-comment-title').textContent = `修改评论 ${index + 1}`;
+  $('edit-comment-path').textContent = item.path;
+  $('edit-comment-quote').textContent = item.quote;
+  $('edit-comment').value = item.comment;
+  $('edit-comment-panel').hidden = false;
   controls();
+  positionOverlays();
+  $('edit-comment').focus({ preventScroll: true });
+});
+on($('close-edit-comment'), 'click', () => { closeEditComment(); controls(); });
+on($('edit-comment'), 'input', () => {
+  controls();
+  if (!editingComment) return;
+  const index = model.comments.indexOf(editingComment);
+  model.updateComment(index, $('edit-comment').value);
+  $(`batch-comment-${index}`).value = editingComment.comment;
+  setBatchFeedback();
+  controls();
+  cache();
 });
 on($('close-batch'), 'click', () => $('batch-dialog').close());
 on($('batch-dialog'), 'close', controls);
@@ -814,6 +872,29 @@ on($('batch-list'), 'input', event => { if (!event.target.matches('textarea')) r
 on($('batch-list'), 'click', event => { const button = event.target.closest('button[data-index]'); if (!button || model.sending || model.uncertain) return; model.removeComment(Number(button.dataset.index)); setBatchFeedback(); renderBatch(); $('clear-batch').focus(); cache(); });
 on($('batch-instruction'), 'input', () => { setBatchFeedback(); controls(); cache(); });
 on($('batch-form'), 'submit', sendBatch);
+if ($('copy-batch')) on($('copy-batch'), 'click', async () => {
+  if (model.batchError(conversation(), active, $('batch-instruction').value)) return;
+  const message = batchMessage(model.comments, $('batch-instruction').value);
+  try {
+    await navigator.clipboard.writeText(message);
+    setBatchFeedback('整批评论已复制，粘贴到目标会话发送。评论已保留。');
+  } catch {
+    $('export-text').value = message;
+    $('export-dialog').showModal();
+    $('export-text').focus();
+    $('export-text').select();
+  }
+  controls();
+});
+if ($('close-export')) on($('close-export'), 'click', () => $('export-dialog').close());
+if ($('native-annotation')) on($('native-annotation'), 'click', () => {
+  if (!selection) return;
+  try {
+    const result = document.oai.annotation.request(selection.range);
+    note(result?.accepted ? '请在宿主批注框填写意见，随后随会话消息提交。' : '宿主未接受批注，请使用 ClearPane 评论。', !result?.accepted);
+  } catch { note('原生批注不可用，请使用 ClearPane 评论。', true); }
+});
+if ($('native-annotation')) on($('native-annotation'), 'mousedown', event => event.preventDefault());
 for (const [formId, buttonId, isOpen] of [
   ['comment-form', 'add-comment', () => !$('comment-panel').hidden],
   ['batch-form', 'send-batch', () => $('batch-dialog').open],
@@ -828,7 +909,8 @@ for (const [formId, buttonId, isOpen] of [
 on($('unlock-batch'), 'click', () => { model.uncertain = false; setBatchFeedback('已解锁。再次发送可能产生重复评论，请确认主会话尚未收到。'); controls(); cache(); });
 on(document, 'keydown', event => {
   if (event.key !== 'Escape' || $('batch-dialog').open || $('link-dialog').open) return;
-  if (!$('comment-panel').hidden) { event.preventDefault(); closeComment(); }
+  if (editingComment) { event.preventDefault(); closeEditComment(); controls(); }
+  else if (!$('comment-panel').hidden) { event.preventDefault(); closeComment(); }
   else if (!$('header-content').hidden && model.document) { $('reader').focus({ preventScroll: true }); setHeader(false); }
 });
 on($('reader'), 'scroll', () => {
@@ -841,6 +923,7 @@ on($('reader'), 'scroll', () => {
 on(window, 'resize', positionOverlays);
 const overlaySize = new ResizeObserver(positionOverlays);
 overlaySize.observe($('comment-panel'));
+overlaySize.observe($('edit-comment-panel'));
 overlaySize.observe($('preview'));
 overlaySize.observe($('header'));
 overlaySize.observe($('reader'));
@@ -858,9 +941,15 @@ on($('close-link'), 'click', () => $('link-dialog').close());
 applySettings();
 refreshDiagramTheme();
 controls();
-if (!bridge) note('宿主桥接不可用，请从 Antigravity Extensions 打开 ClearPane。', true);
+if (!bridge) note('宿主桥接不可用，请从 ClearPane 的宿主入口打开。', true);
 else {
-  void switchConversation();
+  void switchConversation().then(openInitial);
+  if (bridge.kind === 'codex') {
+    $('host-target').textContent = bridge.targetLabel;
+    $('native-annotation').hidden = typeof document.oai?.annotation?.request !== 'function';
+    $('preview').setAttribute('oai-annotation-container-text', '');
+    bridge.onThemeChange = () => { applySettings(); refreshDiagramTheme(); };
+  }
   if (bridge.onWorkspaceChange) workspaceUnsubscribe = bridge.onWorkspaceChange(updateWorkspaces);
   if (bridge.getWorkspaceUris) bridge.getWorkspaceUris().then(updateWorkspaces).catch(() => {
     $('file-list-status').textContent = '工作区信息未读取，仍可粘贴文件路径。';
